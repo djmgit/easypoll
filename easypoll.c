@@ -12,6 +12,7 @@
 
 #define SERVER_PORT 55555
 #define MAX_CONN 1024
+#define DEFAULT_RESPONSE_SIZE 512
 #define MAX_EVENTS 32
 #define BUFF_SIZE 1024
 #define MAX_LINE 256
@@ -20,10 +21,24 @@ typedef struct {
     int r_fd;
 } active_client_t;
 
+typedef struct {
+    char method[20];
+    char resource[100];
+} request_t;
+
+
+void parse_request(char *request, request_t *request_parsed) {
+    char *request_first_line = strtok(st, "\r\n");
+    char *method = strtok(request_first_line, " ");
+    char *resource = strtok(NULL, " ");
+
+    request_parsed->method = method;
+    request_parsed->resource = resource;
+}
 
 int open_resource(char *server_root, char *resource) {
-    char resource_path = (char *)malloc(strlen(server_root) + strlen(resource) + 1);
-    sprintf(resource_path, "%s/%s", server_root, resource);
+    char resource_path = (char *)malloc(strlen(server_root) + strlen(resource));
+    sprintf(resource_path, "%s%s", server_root, resource);
     int fd = open(resource_path, O_RDONLY);
     return fd;
 }
@@ -45,6 +60,16 @@ void setup_server_socket(struct sockaddr_in *addr) {
     addr->sin_port = htons(SERVER_PORT);
 }
 
+void generate_405_response(char **buff) {
+    char *response = "HTTP/1.1 405 Method Not Allowed\r\nServer: EasyPoll\r\nContent-Length: 0\r\n\r\n";
+    *buff = response;
+}
+
+void generate_404_response(char **buff) {
+    char *response = "HTTP/1.1 404 Not Found\r\nServer: EasyPoll\r\nContent-Length: 0\r\n\r\n";
+    *buff = response;
+}
+
 int set_non_blocking(int sockfd) {
     if (fcntl(sockfd, F_SETFL, fcntl(sockfd, F_GETFL, 0) | O_NONBLOCK) == -1) {
         return -1;
@@ -57,6 +82,7 @@ void run_server() {
     int conn_sock;
     int sockopt  = 1;
     char buff[BUFF_SIZE];
+    char resp[DEFAULT_RESPONSE_SIZE];
     char *server_root = "./www";
     struct epoll_event events[MAX_EVENTS];
     struct sockaddr_in server_addr;
@@ -106,7 +132,24 @@ void run_server() {
                         break;
                     } else {
                         printf("Received data:\n %s\n", buff);
-                        clients[events[i].data.fd].conn_fd = events[i].data.fd;
+                        request_t request_parsed = (request_t){};
+                        parse_request(buff, &request);
+                        if (strcmp(request_parsed.method, "GET") != 0) {
+                            memset(resp, 0, sizeof(resp));
+                            generate_405_response(&resp);
+                            write(events[i].data.fd, resp, strlen(resp));
+                        } else {
+                            int r_fd = open_resource(server_root, request_parsed.resource);
+                            if (r_fd < 0) {
+                                memset(resp, 0, sizeof(resp));
+                                generate_404_response(&resp);
+                                write(events[i].data.fd, resp, strlen(resp));
+                            } else {
+                                clients[events[i].data.fd].conn_fd = (active_client_t){
+                                    .r_fd = r_fd
+                                }
+                            }
+                        }
                     }
                 }
             }
