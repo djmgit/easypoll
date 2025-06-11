@@ -17,6 +17,7 @@
 #define DEFAULT_RESP_PREFIX_SIZE 256
 #define MAX_EVENTS 32
 #define BUFF_SIZE 1024
+#define CHUNK_SIZE 512
 #define MAX_LINE 256
 
 typedef struct {
@@ -41,7 +42,7 @@ int get_file_size(int fd) {
 
 void create_response_prefix_with_content_length(char **buff, int size) {
     char prefix[DEFAULT_RESP_PREFIX_SIZE];
-    sprintf(prefix, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nContent-Type: text/html\r\n\r\nHi\n", size);
+    sprintf(prefix, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nContent-Type: text/html\r\n\r\n", size);
     strcpy(*buff, prefix);
 }
 
@@ -95,12 +96,27 @@ int set_non_blocking(int sockfd) {
     return 0;
 }
 
+int copy_from_r_fd_sock_fd(int r_fd, int sock_fd) {
+    char t_buff[CHUNK_SIZE];
+
+    int n_read = read(r_fd, t_buff, CHUNK_SIZE);
+    if (n_read > 0) {
+        write(sock_fd, t_buff, n_read);
+    }
+
+    if (n_read < CHUNK_SIZE) {
+        close(r_fd);
+    }
+
+    return n_read;
+}
+
 void run_server() {
     int nfds;
     int conn_sock;
     int sockopt  = 1;
     request_t request_parsed = (request_t){};
-    char resp_prefix = (char *)malloc(DEFAULT_RESP_PREFIX_SIZE);
+    char *resp_prefix = (char *)malloc(DEFAULT_RESP_PREFIX_SIZE);
     char buff[BUFF_SIZE];
     char *resp = (char *)malloc(DEFAULT_RESPONSE_SIZE);
     char *server_root = "./www";
@@ -153,15 +169,14 @@ void run_server() {
                     } else {
                         printf("Received data:\n %s\n", buff);
                         memset(&request_parsed, 0, sizeof(request_parsed));
+                        memset(resp, 0, DEFAULT_RESPONSE_SIZE);
                         parse_request(buff, &request_parsed);
                         if (strcmp(request_parsed.method, "GET") != 0) {
-                            memset(resp, 0, sizeof(resp));
                             generate_405_response(&resp);
                             write(events[i].data.fd, resp, strlen(resp));
                         } else {
                             int r_fd = open_resource(server_root, request_parsed.resource);
                             if (r_fd < 0) {
-                                memset(resp, 0, sizeof(resp));
                                 generate_404_response(&resp);
                                 write(events[i].data.fd, resp, strlen(resp));
                             } else {
@@ -170,11 +185,12 @@ void run_server() {
                                     generate_404_response(&resp);
                                 } else {
                                     printf("file size: %d\n", f_size);
-                                    memset(resp_prefix, 0, sizeof(resp_prefix));
+                                    memset(resp_prefix, 0, DEFAULT_RESP_PREFIX_SIZE);
                                     create_response_prefix_with_content_length(&resp_prefix, f_size);
                                     printf("%s\n", resp_prefix);
+                                    write(events[i].data.fd, resp_prefix, strlen(resp_prefix));
                                     clients[events[i].data.fd] = (active_client_t) {    
-                                        .r_fd = r_fd    
+                                        .r_fd = r_fd
                                     };
                                 }
                             }
@@ -184,12 +200,11 @@ void run_server() {
             }
             if ((events[i].events & EPOLLOUT) && (events[i].data.fd != server_sock)) {
                 if (clients[events[i].data.fd].r_fd >= 0) {
-                    char *res = "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/html\r\n\r\nHi\n";
-                    char *res3 = "Hi\n";
-                    write(events[i].data.fd, res, strlen(res));
-                    write(events[i].data.fd, res3, strlen(res3));
-                    clients[events[i].data.fd].r_fd = -1;
-                    printf("Done sending data to fd: %d\n", events[i].data.fd);
+                    int n_read = copy_from_r_fd_sock_fd(clients[events[i].data.fd].r_fd, events[i].data.fd);
+                    if (n_read < CHUNK_SIZE) {
+                        clients[events[i].data.fd].r_fd = -1;
+                        printf("Done sending data to fd: %d\n", events[i].data.fd);
+                    }
                 }
             }
             if (events[i].events & (EPOLLRDHUP | EPOLLHUP)) {

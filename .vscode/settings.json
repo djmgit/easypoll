@@ -2,6 +2,7 @@
     "files.associations": {
         "memory_resource": "c",
         "stdlib.h": "c",
-        "stdio.h": "c"
+        "stdio.h": "c",
+        "string.h": "c"
     }
 }
